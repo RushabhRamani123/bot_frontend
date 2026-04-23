@@ -325,7 +325,8 @@ export default function LinguaBot() {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
-          sampleRate: 16000,
+          sampleRate: 44100,
+          sampleSize: 16,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -355,7 +356,7 @@ export default function LinguaBot() {
         await handleVoiceBlob(blob);
       };
 
-      recorder.start(250);
+      recorder.start(100);
       mediaRecorderRef.current = recorder;
       setState("listening");
       setMicDenied(false);
