@@ -221,9 +221,9 @@ export default function LinguaBot() {
   const [justSpoke, setJustSpoke] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
   const [showIntroModal, setShowIntroModal] = useState(true);
-  const [continuousMode, setContinuousMode] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [lastBotAudioB64, setLastBotAudioB64] = useState<string | null>(null);
@@ -323,7 +323,7 @@ export default function LinguaBot() {
 
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        alert("Your browser is blocking microphone access because you are using an insecure HTTP connection! Please access the site using the HTTPS tunnel link.");
+        alert("Your browser is blocking microphone access!");
         setMicDenied(true);
         return;
       }
@@ -338,34 +338,72 @@ export default function LinguaBot() {
           autoGainControl: true,
         }
       });
+
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
       let options: MediaRecorderOptions & { mimeType: string } = { mimeType: "audio/webm;codecs=opus" };
       if (typeof MediaRecorder !== "undefined") {
         if (!MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-          if (MediaRecorder.isTypeSupported("audio/webm")) {
-            options = { mimeType: "audio/webm" };
-          } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
-            options = { mimeType: "audio/mp4" };
-          } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
-            options = { mimeType: "audio/ogg" };
-          }
+          options = { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "audio/ogg" };
         }
       }
+
       const recorder = new MediaRecorder(stream, options);
       chunksRef.current = [];
+      
+      let silenceStart: number | null = null;
+      const SILENCE_THRESHOLD = 0.01;
+      const SILENCE_DURATION = 3000;
+
+      const checkAudioLevel = () => {
+        const currentRecorder = mediaRecorderRef.current;
+        if (!currentRecorder || currentRecorder.state !== "recording") return;
+        
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
+        
+        if (average < SILENCE_THRESHOLD) {
+          if (!silenceStart) {
+            silenceStart = Date.now();
+          } else if (Date.now() - silenceStart > SILENCE_DURATION) {
+            recorder.stop();
+            return;
+          }
+        } else {
+          silenceStart = null;
+        }
+        
+        if (currentRecorder && currentRecorder.state === "recording") {
+          requestAnimationFrame(checkAudioLevel);
+        }
+      };
+
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
+        audioContext.close();
         const blob = new Blob(chunksRef.current, { type: options.mimeType || "audio/webm" });
-        await handleVoiceBlobContinuous(blob);
+        if (blob.size > 1000) {
+          await handleVoiceBlobContinuous(blob);
+        } else {
+          setState("idle");
+        }
       };
 
       recorder.start(100);
       mediaRecorderRef.current = recorder;
       setState("listening");
       setMicDenied(false);
+      
+      setTimeout(() => checkAudioLevel(), 100);
     } catch {
       setMicDenied(true);
     }
@@ -402,13 +440,12 @@ export default function LinguaBot() {
 
       if (result.audio_base64) {
         setLastBotAudioB64(result.audio_base64);
-        playAudioB64(result.audio_base64, continuousMode);
+        playAudioB64(result.audio_base64, true);
         setState("speaking");
       } else {
         setState("idle");
-        if (continuousMode) {
-          setTimeout(() => handleSpeak(), 500);
-        }
+        // Auto-restart listening for continuous conversation
+        setTimeout(() => handleSpeak(), 500);
       }
 
       await loadBackendProgress(sessionId);
@@ -422,8 +459,12 @@ export default function LinguaBot() {
   const handleStop = () => {
     if (mediaRecorderRef.current && state === "listening") {
       mediaRecorderRef.current.stop();
-      setState("thinking");
     }
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setState("idle");
   };
 
   const handleReplay = async () => {
@@ -635,27 +676,13 @@ export default function LinguaBot() {
           <button onClick={state === "listening" ? handleStop : handleSpeak} disabled={state !== "idle" && state !== "listening"} style={{
             padding: "13px 44px", borderRadius: 99, fontSize: 14, fontWeight: 600,
             cursor: (state !== "idle" && state !== "listening") ? "not-allowed" : "pointer",
-            background: (state !== "idle" && state !== "listening") ? "var(--color-background-secondary)" : (state === "listening" ? col.ring : col.ring),
-            color: (state !== "idle" && state !== "listening") ? "var(--color-text-tertiary)" : "#fff",
+            background: state === "listening" ? "#E24B4A" : col.ring,
+            color: "#fff",
             border: "none",
             letterSpacing: "0.01em",
             transition: "all 0.25s",
-            transform: (state !== "idle" && state !== "listening") ? "scale(0.97)" : "scale(1)",
-            boxShadow: state === "idle" ? `0 0 0 4px ${col.bg}` : "none",
           }}>
-            {state === "listening" ? "⏹ Stop" : state === "thinking" ? "Processing..." : state === "speaking" ? "Speaking..." : continuousMode ? "🎙️ Continuous" : "Tap to speak"}
-          </button>
-
-          {/* Continuous mode toggle */}
-          <button onClick={() => setContinuousMode(c => !c)} disabled={state !== "idle"} style={{
-            padding: "7px 14px", borderRadius: 99, fontSize: 11.5,
-            cursor: state !== "idle" ? "not-allowed" : "pointer",
-            background: continuousMode ? "#7F77DD" : "transparent",
-            color: continuousMode ? "#fff" : "var(--color-text-secondary)",
-            border: "0.5px solid var(--color-border-tertiary)",
-            opacity: state !== "idle" ? 0.4 : 1,
-          }}>
-            {continuousMode ? "✓ Continuous ON" : "Continuous Mode"}
+            {state === "listening" ? "Stop" : state === "thinking" ? "Processing..." : state === "speaking" ? "Speaking..." : "Speak"}
           </button>
 
           {/* Secondary controls */}
