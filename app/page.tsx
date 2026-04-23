@@ -221,6 +221,7 @@ export default function LinguaBot() {
   const [justSpoke, setJustSpoke] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
   const [showIntroModal, setShowIntroModal] = useState(true);
+  const [continuousMode, setContinuousMode] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -276,10 +277,15 @@ export default function LinguaBot() {
     } catch { }
   };
 
-  const playAudioB64 = (b64: string) => {
+  const playAudioB64 = (b64: string, autoListen = false) => {
     if (!audioRef.current) audioRef.current = new Audio();
     audioRef.current.src = `data:audio/mpeg;base64,${b64}`;
-    audioRef.current.onended = () => setState("idle");
+    audioRef.current.onended = () => {
+      setState("idle");
+      if (autoListen) {
+        setTimeout(() => handleSpeak(), 500);
+      }
+    };
     audioRef.current.play().catch(() => setState("idle"));
   };
 
@@ -353,7 +359,7 @@ export default function LinguaBot() {
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         const blob = new Blob(chunksRef.current, { type: options.mimeType || "audio/webm" });
-        await handleVoiceBlob(blob);
+        await handleVoiceBlobContinuous(blob);
       };
 
       recorder.start(100);
@@ -362,6 +368,54 @@ export default function LinguaBot() {
       setMicDenied(false);
     } catch {
       setMicDenied(true);
+    }
+  };
+
+  const handleVoiceBlobContinuous = async (blob: Blob) => {
+    setState("thinking");
+    try {
+      const formData = new FormData();
+      const ext = blob.type.split(";")[0].trim() || "audio/webm";
+      formData.append("file", blob, `audio.${ext.replace("audio/", "")}`);
+      formData.append("session_id", sessionId);
+      formData.append("mode", "casual");
+      formData.append("level", "intermediate");
+
+      const res = await fetch("/quick-conversation/", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) throw new Error("Failed");
+      const result = await res.json();
+
+      if (!result.user_text || result.user_text.trim().length < 2) {
+        setBotText("I didn't catch that. Could you say something?");
+        setState("idle");
+        return;
+      }
+
+      setPrompt(`You: ${result.user_text}`);
+      setBotText(result.bot_text);
+      setTags(shuffle(FEEDBACK_TAGS).slice(0, 3));
+      setSessionCount(c => c + 1);
+
+      if (result.audio_base64) {
+        setLastBotAudioB64(result.audio_base64);
+        playAudioB64(result.audio_base64, continuousMode);
+        setState("speaking");
+      } else {
+        setState("idle");
+        if (continuousMode) {
+          setTimeout(() => handleSpeak(), 500);
+        }
+      }
+
+      await loadBackendProgress(sessionId);
+      setJustSpoke(true);
+    } catch (e) {
+      setBotText("Something went wrong. Try again.");
+      setState("idle");
     }
   };
 
@@ -589,7 +643,19 @@ export default function LinguaBot() {
             transform: (state !== "idle" && state !== "listening") ? "scale(0.97)" : "scale(1)",
             boxShadow: state === "idle" ? `0 0 0 4px ${col.bg}` : "none",
           }}>
-            {state === "listening" ? "⏹ Stop Recording" : state === "thinking" ? "Processing..." : state === "speaking" ? "Speaking..." : "Tap to speak"}
+            {state === "listening" ? "⏹ Stop" : state === "thinking" ? "Processing..." : state === "speaking" ? "Speaking..." : continuousMode ? "🎙️ Continuous" : "Tap to speak"}
+          </button>
+
+          {/* Continuous mode toggle */}
+          <button onClick={() => setContinuousMode(c => !c)} disabled={state !== "idle"} style={{
+            padding: "7px 14px", borderRadius: 99, fontSize: 11.5,
+            cursor: state !== "idle" ? "not-allowed" : "pointer",
+            background: continuousMode ? "#7F77DD" : "transparent",
+            color: continuousMode ? "#fff" : "var(--color-text-secondary)",
+            border: "0.5px solid var(--color-border-tertiary)",
+            opacity: state !== "idle" ? 0.4 : 1,
+          }}>
+            {continuousMode ? "✓ Continuous ON" : "Continuous Mode"}
           </button>
 
           {/* Secondary controls */}
