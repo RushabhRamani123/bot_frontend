@@ -322,8 +322,27 @@ export default function LinguaBot() {
         return;
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      let options = {};
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: 16000,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      let options: MediaRecorderOptions & { mimeType: string } = { mimeType: "audio/webm;codecs=opus" };
+      if (typeof MediaRecorder !== "undefined") {
+        if (!MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+          if (MediaRecorder.isTypeSupported("audio/webm")) {
+            options = { mimeType: "audio/webm" };
+          } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+            options = { mimeType: "audio/mp4" };
+          } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
+            options = { mimeType: "audio/ogg" };
+          }
+        }
+      }
       if (typeof MediaRecorder !== "undefined") {
         if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
           options = { mimeType: "audio/webm;codecs=opus" };
@@ -341,11 +360,11 @@ export default function LinguaBot() {
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        const blob = new Blob(chunksRef.current, { type: options.mimeType || "audio/webm" });
         await handleVoiceBlob(blob);
       };
 
-      recorder.start(100);
+      recorder.start(250);
       mediaRecorderRef.current = recorder;
       setState("listening");
       setMicDenied(false);
