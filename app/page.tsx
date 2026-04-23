@@ -223,7 +223,6 @@ export default function LinguaBot() {
   const [showIntroModal, setShowIntroModal] = useState(true);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [lastBotAudioB64, setLastBotAudioB64] = useState<string | null>(null);
@@ -332,14 +331,13 @@ export default function LinguaBot() {
         audio: {
           channelCount: 1,
           sampleRate: 44100,
-          sampleSize: 16,
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
         }
       });
 
-      const audioContext = new AudioContext();
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
@@ -354,33 +352,25 @@ export default function LinguaBot() {
 
       const recorder = new MediaRecorder(stream, options);
       chunksRef.current = [];
-      
       let silenceStart: number | null = null;
       const SILENCE_THRESHOLD = 0.01;
       const SILENCE_DURATION = 3000;
-
-      const checkAudioLevel = () => {
-        const currentRecorder = mediaRecorderRef.current;
-        if (!currentRecorder || currentRecorder.state !== "recording") return;
-        
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
-        analyser.getByteFrequencyData(dataArray);
-        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length / 255;
-        
-        if (average < SILENCE_THRESHOLD) {
-          if (!silenceStart) {
-            silenceStart = Date.now();
-          } else if (Date.now() - silenceStart > SILENCE_DURATION) {
+      
+      const checkSilence = () => {
+        if (recorder.state !== "recording") return;
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(data);
+        const level = data.reduce((a, b) => a + b, 0) / data.length / 255;
+        if (level < SILENCE_THRESHOLD) {
+          if (!silenceStart) silenceStart = Date.now();
+          else if (Date.now() - silenceStart > SILENCE_DURATION) {
             recorder.stop();
             return;
           }
         } else {
           silenceStart = null;
         }
-        
-        if (currentRecorder && currentRecorder.state === "recording") {
-          requestAnimationFrame(checkAudioLevel);
-        }
+        requestAnimationFrame(checkSilence);
       };
 
       recorder.ondataavailable = (e) => {
@@ -389,12 +379,13 @@ export default function LinguaBot() {
 
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        audioContext.close();
+        audioContext.close().catch(() => {});
         const blob = new Blob(chunksRef.current, { type: options.mimeType || "audio/webm" });
-        if (blob.size > 1000) {
+        if (blob.size > 500) {
           await handleVoiceBlobContinuous(blob);
         } else {
           setState("idle");
+          setTimeout(() => handleSpeak(), 500);
         }
       };
 
@@ -402,8 +393,7 @@ export default function LinguaBot() {
       mediaRecorderRef.current = recorder;
       setState("listening");
       setMicDenied(false);
-      
-      setTimeout(() => checkAudioLevel(), 100);
+      requestAnimationFrame(checkSilence);
     } catch {
       setMicDenied(true);
     }
