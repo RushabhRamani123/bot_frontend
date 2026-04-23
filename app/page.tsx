@@ -343,15 +343,6 @@ export default function LinguaBot() {
           }
         }
       }
-      if (typeof MediaRecorder !== "undefined") {
-        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
-          options = { mimeType: "audio/webm;codecs=opus" };
-        } else if (MediaRecorder.isTypeSupported("audio/webm")) {
-          options = { mimeType: "audio/webm" };
-        } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
-          options = { mimeType: "audio/mp4" };
-        }
-      }
       const recorder = new MediaRecorder(stream, options);
       chunksRef.current = [];
       recorder.ondataavailable = (e) => {
